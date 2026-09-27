@@ -1,3 +1,17 @@
+# MelonPlayer
+
+A macOS fork of [AetherPlayer](https://github.com/superuser404notfound/AetherPlayer), powered by [AetherEngine](https://aetherengine.superuser404.de). Interface design is based on [Melon Video for visionOS](https://apps.apple.com/us/app/melon-video/id6811750997).
+
+This fork adds a filmstrip playback timeline, Melon-style audio/subtitle/chapter menus, direct libass subtitle rendering and adjustable plain subtitles, and macOS window and playback refinements. The iOS source is retained from upstream; this fork's changes target macOS.
+
+Open `AetherPlayer.xcodeproj` and build the `AetherPlayer` scheme. The resulting app is `MelonPlayer.app`. Select your own signing team in Xcode. AetherEngine remains an external Swift package.
+
+The experimental display-brightness button currently cannot access display brightness from the sandboxed app. It uses a private macOS API and is not App Store-compatible.
+
+The original license and third-party acknowledgements are retained. The documentation below describes upstream AetherPlayer; upstream downloads and update feeds are not MelonPlayer releases.
+
+---
+
 <p align="center">
   <img src="docs/images/aetherplayer-logo.png" alt="AetherPlayer" width="160">
 </p>

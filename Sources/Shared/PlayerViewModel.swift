@@ -45,6 +45,74 @@ final class PlayerViewModel {
     private(set) var selectedDiscTitleID: Int?
     private(set) var discChapters: [ChapterInfo] = []
 
+    #if os(macOS)
+    private(set) var macASSHeader: String?
+    private(set) var subtitleRole: SubtitleMode = .off
+    private(set) var mediaChapters: [ChapterInfo] = []
+    private var macLoadID = UUID()
+    private var trackPreferencesReady = false
+    private var restoredAudioPreference = false
+    private var restoredSubtitlePreference = false
+
+    var melonAudioTracks: [AudioTrack] {
+        engine.audioTracks.map { AudioTrack(id: $0.id, title: $0.name, language: $0.language ?? "",
+            isDefault: $0.isDefault, codec: $0.codec,
+            channelLayout: $0.channels == 6 ? "5.1" : $0.channels == 8 ? "7.1" : $0.channels > 0 ? "\($0.channels) ch" : "") }
+    }
+    var melonSubtitleTracks: [SubtitleTrack] {
+        subtitleTracks.map { SubtitleTrack(id: $0.id, title: $0.name, language: $0.language ?? "",
+            codec: $0.codec, isDefault: $0.isDefault, isForced: $0.isForced) }
+    }
+    func canUsePlain(_ id: Int) -> Bool {
+        guard let track = melonSubtitleTracks.first(where: { $0.id == id }) else { return false }
+        return !track.isImageBased && engine.subtitleTracks.first(where: { $0.id == id })?.isNativelyRenderedSubtitle != true
+    }
+    func subtitleMode(for id: Int) -> SubtitleMode {
+        selectedSubtitleIndex == id ? subtitleRole : .off
+    }
+    func setSubtitleMode(_ mode: SubtitleMode, for id: Int) {
+        guard let track = melonSubtitleTracks.first(where: { $0.id == id }), mode != .plain || canUsePlain(id) else { return }
+        SubtitlePreferences().save(mode, language: track.language, label: track.title)
+        applySubtitleMode(mode, id: id)
+    }
+    private func applySubtitleMode(_ mode: SubtitleMode, id: Int) {
+        if mode == .off {
+            if selectedSubtitleIndex == id { clearSubtitleSelection() }
+        } else {
+            subtitleRole = mode
+            activateSubtitle(engineIndex: id)
+            if mode == .plain { deactivateASSRendering() }
+        }
+    }
+    private func restoreTrackPreferences() {
+        guard trackPreferencesReady else { return }
+        if !restoredAudioPreference, !engine.audioTracks.isEmpty {
+            restoredAudioPreference = true
+            if let track = AudioPreferences().match(in: melonAudioTracks) { engine.selectAudioTrack(index: track.id) }
+        }
+        if !restoredSubtitlePreference, !engine.subtitleTracks.isEmpty {
+            restoredSubtitlePreference = true
+            // Use the same language/label matching and default/forced fallback as melon.
+            let tracks = engine.subtitleTracks.map { SubtitleTrack(id: $0.id, title: $0.name, language: $0.language ?? "",
+                codec: $0.codec, isDefault: $0.isDefault, isForced: $0.isForced) }
+            let state = SubtitleState.initial(tracks: tracks, preferences: SubtitlePreferences().load())
+            if let track = tracks.first(where: { state.mode(for: $0.id) == .plain })
+                ?? tracks.first(where: { state.mode(for: $0.id) == .internal }) {
+                let mode = state.mode(for: track.id)
+                applySubtitleMode(mode == .plain && !canUsePlain(track.id) ? .internal : mode, id: track.id)
+            } else { clearSubtitleSelection() }
+        }
+    }
+    var playbackChapters: [ChapterInfo] { discChapters.isEmpty ? mediaChapters : discChapters }
+    var currentChapterID: Int? {
+        playbackChapters.filter { $0.startSeconds <= currentTime }.max { $0.startSeconds < $1.startSeconds }?.id
+    }
+    func selectPlaybackChapter(_ chapter: ChapterInfo) {
+        if discChapters.isEmpty { seek(to: chapter.startSeconds) }
+        else { selectChapter(id: chapter.id) }
+    }
+    #endif
+
     // Host-only state.
     private(set) var loadedURL: URL?
     private(set) var loadError: String?
@@ -161,10 +229,28 @@ final class PlayerViewModel {
     private(set) var resumeMessage: String?
     private var lastPersist: Date = .distantPast
 
+#if os(macOS)
+    // Keep the UI preference independent of a host that has not created its
+    // audio output yet (its getter temporarily reports the default volume).
+    private var preferredVolume: Float = {
+        guard UserDefaults.standard.object(forKey: "player.volume") != nil else { return 1 }
+        let value = UserDefaults.standard.float(forKey: "player.volume")
+        return value.isFinite ? max(0, min(1, value)) : 1
+    }()
+#endif
     var volume: Float {
-        get { engine.volume }
+        get {
+#if os(macOS)
+            preferredVolume
+#else
+            engine.volume
+#endif
+        }
         set {
             let clamped = max(0, min(1, newValue))
+#if os(macOS)
+            preferredVolume = clamped
+#endif
             engine.volume = clamped
             UserDefaults.standard.set(clamped, forKey: "player.volume")
         }
@@ -244,6 +330,13 @@ final class PlayerViewModel {
         }.store(in: &cancellables)
         engine.$state.receive(on: DispatchQueue.main).sink { [weak self] in
             self?.state = $0
+#if os(macOS)
+            // Output creation/replacement can discard an earlier volume write.
+            // Reapply at play/pause boundaries, including track switches.
+            if $0 == .playing || $0 == .paused, let self {
+                self.engine.volume = self.preferredVolume
+            }
+#endif
             self?.updateSleepAssertion()
             if ($0 == .idle || $0 == .ended), self?.hasMedia == true {
                 self?.handleTrackEnded()
@@ -272,13 +365,27 @@ final class PlayerViewModel {
         }.store(in: &cancellables)
         engine.$duration.receive(on: DispatchQueue.main).sink { [weak self] in
             self?.duration = $0
+#if os(macOS)
+            self?.scrubPreview.buildTimeline(duration: $0)
+#endif
             self?.pushNowPlaying()
         }.store(in: &cancellables)
-        engine.$audioTracks.receive(on: DispatchQueue.main).sink { [weak self] in self?.audioTracks = $0 }.store(in: &cancellables)
-        engine.$subtitleTracks.receive(on: DispatchQueue.main).sink { [weak self] in self?.subtitleTracks = $0 }.store(in: &cancellables)
+        engine.$audioTracks.receive(on: DispatchQueue.main).sink { [weak self] in self?.audioTracks = $0
+            #if os(macOS)
+            self?.restoreTrackPreferences()
+            #endif
+        }.store(in: &cancellables)
+        engine.$subtitleTracks.receive(on: DispatchQueue.main).sink { [weak self] in self?.subtitleTracks = $0
+            #if os(macOS)
+            self?.restoreTrackPreferences()
+            #endif
+        }.store(in: &cancellables)
         engine.$activeAudioTrackIndex.receive(on: DispatchQueue.main).sink { [weak self] in self?.activeAudioTrackIndex = $0 }.store(in: &cancellables)
         engine.$discTitles.receive(on: DispatchQueue.main).sink { [weak self] in self?.discTitles = $0 }.store(in: &cancellables)
         engine.$selectedDiscTitle.receive(on: DispatchQueue.main).sink { [weak self] in self?.selectedDiscTitleID = $0?.id }.store(in: &cancellables)
+        #if os(macOS)
+        engine.$mediaChapters.receive(on: DispatchQueue.main).sink { [weak self] in self?.mediaChapters = $0 }.store(in: &cancellables)
+        #endif
         engine.$discChapters.receive(on: DispatchQueue.main).sink { [weak self] in self?.discChapters = $0 }.store(in: &cancellables)
         engine.$playbackBackend.receive(on: DispatchQueue.main).sink { [weak self] in self?.backend = $0 }.store(in: &cancellables)
         engine.$subtitleCues.receive(on: DispatchQueue.main).sink { [weak self] in self?.subtitleCues = $0 }.store(in: &cancellables)
@@ -308,6 +415,14 @@ final class PlayerViewModel {
     /// instead of resolving a recents resume point. `forceLive` (Open URL toggle)
     /// loads straight on the engine's live path, skipping the VOD probe pass.
     private func openInternal(url: URL, recordPlaylistRelative: Bool, startOverride: Double? = nil, forceLive: Bool = false) async {
+        #if os(macOS)
+        let requestID = UUID()
+        macLoadID = requestID
+        trackPreferencesReady = false
+        restoredAudioPreference = false
+        restoredSubtitlePreference = false
+        subtitleRole = .off
+        #endif
         loadError = nil
         // A notice describes the session that is going away, above all an audio drop, so it does not
         // survive into the next one.
@@ -355,6 +470,9 @@ final class PlayerViewModel {
                 options.dvrWindowSeconds = Self.liveDVRWindowSeconds
             }
             let probe = try await engine.load(url: url, startPosition: resume, options: options)
+            #if os(macOS)
+            guard macLoadID == requestID else { return }
+            #endif
             // Raw live source (e.g. a tuner MPEG-TS over HTTP): the probe flags no-duration
             // network streams; reload on the engine's live path so the clock, DVR ring, and
             // subtitles run with live semantics. Costs one extra tune-in only for live sources
@@ -364,19 +482,34 @@ final class PlayerViewModel {
                 liveOptions.isLive = true
                 liveOptions.dvrWindowSeconds = Self.liveDVRWindowSeconds
                 try await engine.load(url: url, options: liveOptions)
+                #if os(macOS)
+                guard macLoadID == requestID else { return }
+                #endif
             }
             // Remember resolved liveness so the next open of this URL skips the probe pass.
             if engine.isLive, !url.isFileURL {
                 LiveStreamMemory.remember(url)
             }
+#if os(macOS)
+            engine.volume = preferredVolume
+#endif
             engine.play()
             loadedURL = url
             frameExtractor = engine.makeFrameExtractor()
             frameExtractorTitleID = engine.selectedDiscTitle?.id
             scrubPreview.configure(extractor: frameExtractor, enabled: frameExtractor != nil)
+#if os(macOS)
+            scrubPreview.configureTimeline(extractor: engine.makeFrameExtractor(), duration: engine.duration)
+#endif
             selectedSubtitleIndex = nil
             activeSubtitleCodec = nil
             deactivateASSRendering()
+            #if os(macOS)
+            audioTracks = engine.audioTracks
+            subtitleTracks = engine.subtitleTracks
+            trackPreferencesReady = true
+            restoreTrackPreferences()
+            #endif
             rate = 1.0
             engine.setRate(1.0)
             if let bm = BookmarkAccess.bookmark(for: url) {
@@ -388,11 +521,17 @@ final class PlayerViewModel {
             if startOverride == nil, let resume { resumeMessage = "Resuming from \(formatTimecode(resume))" }
             else { resumeMessage = nil }
         } catch is CancellationError {
+            #if os(macOS)
+            guard macLoadID == requestID else { return }
+            #endif
             // Superseded by a newer load or a deliberate cancel; not an error to surface.
             loadedURL = nil
             activeSubtitleCodec = nil
             deactivateASSRendering()
         } catch {
+            #if os(macOS)
+            guard macLoadID == requestID else { return }
+            #endif
             loadError = "Could not play \(url.lastPathComponent): \(error.localizedDescription)"
             loadedURL = nil
             activeSubtitleCodec = nil
@@ -452,6 +591,11 @@ final class PlayerViewModel {
     }
 
     func stop() {
+        #if os(macOS)
+        macLoadID = UUID()
+        trackPreferencesReady = false
+        subtitleRole = .off
+        #endif
         flushPosition()
         engine.stop()
         let extractorToClose = frameExtractor
@@ -494,6 +638,9 @@ final class PlayerViewModel {
     }
 
     func selectAudio(engineIndex: Int) {
+        #if os(macOS)
+        if let track = melonAudioTracks.first(where: { $0.id == engineIndex }) { AudioPreferences().save(track) }
+        #endif
         engine.selectAudioTrack(index: engineIndex)
     }
 
@@ -506,10 +653,24 @@ final class PlayerViewModel {
     }
 
     func selectSubtitle(engineIndex: Int) {
+        #if os(macOS)
+        setSubtitleMode(.internal, for: engineIndex)
+        #else
+        activateSubtitle(engineIndex: engineIndex)
+        #endif
+    }
+
+    private func activateSubtitle(engineIndex: Int) {
         engine.selectSubtitleTrack(index: engineIndex)
         selectedSubtitleIndex = engineIndex
         let track = engine.subtitleTracks.first { $0.id == engineIndex }
         activeSubtitleCodec = track?.codec.lowercased()
+        #if os(macOS)
+        deactivateASSRendering()
+        if ["ass", "ssa"].contains(activeSubtitleCodec ?? "") {
+            macASSHeader = track?.assHeader ?? engine.sidecarASSHeader
+        }
+        #else
         if activeSubtitleCodec == "ass" || activeSubtitleCodec == "ssa",
            let header = track?.assHeader, !header.isEmpty {
             assCoordinator.onRendererChanged = { [weak self] renderer in self?.assRenderer = renderer }
@@ -518,9 +679,20 @@ final class PlayerViewModel {
         } else {
             deactivateASSRendering()
         }
+        #endif
     }
 
     func disableSubtitle() {
+        #if os(macOS)
+        if let id = selectedSubtitleIndex { setSubtitleMode(.off, for: id); return }
+        #endif
+        clearSubtitleSelection()
+    }
+
+    private func clearSubtitleSelection() {
+        #if os(macOS)
+        subtitleRole = .off
+        #endif
         engine.clearSubtitle()
         selectedSubtitleIndex = nil
         activeSubtitleCodec = nil
@@ -528,6 +700,9 @@ final class PlayerViewModel {
     }
 
     func loadSidecarSubtitle(url: URL) {
+        #if os(macOS)
+        subtitleRole = .internal
+        #endif
         engine.selectSidecarSubtitle(url: url)
         activeSubtitleCodec = url.pathExtension.lowercased()
         if activeSubtitleCodec == "ass" || activeSubtitleCodec == "ssa" {
@@ -539,6 +714,12 @@ final class PlayerViewModel {
 
     /// Activate styled ASS for a sidecar once the engine publishes its async header; strip fallback else.
     private func activateSidecarASSWhenHeaderArrives() {
+        #if os(macOS)
+        deactivateASSRendering()
+        sidecarASSHeaderCancellable = engine.$sidecarASSHeader.receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.macASSHeader = $0 }
+        return
+        #else
         sidecarASSHeaderCancellable?.cancel()
         assCoordinator.onRendererChanged = { [weak self] renderer in self?.assRenderer = renderer }
         sidecarASSHeaderCancellable = engine.$sidecarASSHeader
@@ -550,9 +731,13 @@ final class PlayerViewModel {
                 self.assCoordinator.activate(header: header, itemID: self.assItemID)
                 self.assRenderer = self.assCoordinator.renderer
             }
+        #endif
     }
 
     func deactivateASSRendering() {
+        #if os(macOS)
+        macASSHeader = nil
+        #endif
         sidecarASSHeaderCancellable?.cancel()
         sidecarASSHeaderCancellable = nil
         assCoordinator.deactivate()
@@ -580,6 +765,9 @@ final class PlayerViewModel {
         frameExtractor = engine.makeFrameExtractor()
         frameExtractorTitleID = currentTitleID
         scrubPreview.configure(extractor: frameExtractor, enabled: frameExtractor != nil)
+#if os(macOS)
+            scrubPreview.configureTimeline(extractor: engine.makeFrameExtractor(), duration: engine.duration)
+#endif
         if let previous { Task { await previous.shutdown() } }
     }
 

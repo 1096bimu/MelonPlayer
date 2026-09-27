@@ -17,7 +17,7 @@ struct AetherPlayerApp: App {
 #endif
 
     var body: some Scene {
-        Window("AetherPlayer", id: "main") {
+        Window("MelonPlayer", id: "main") {
             Group {
                 if let model {
                     ContentView(model: model) {
@@ -34,6 +34,7 @@ struct AetherPlayerApp: App {
                 }
             }
             .onAppear {
+                AppDelegate.onOpenMainWindow = { openWindow(id: "main") }
                 NSApp.windows.first?.setFrameAutosaveName("AetherPlayerMainWindow")
                 if let model {
                     // Activation/fronting is handled in AppDelegate; just load.
@@ -48,10 +49,11 @@ struct AetherPlayerApp: App {
             }
             .frame(minWidth: 640, minHeight: 360)
         }
+        .windowStyle(.hiddenTitleBar)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About AetherPlayer") { AboutPanel.show() }
+                Button("About MelonPlayer") { AboutPanel.show() }
             }
 #if DIRECT_DISTRIBUTION
             CommandGroup(after: .appInfo) {

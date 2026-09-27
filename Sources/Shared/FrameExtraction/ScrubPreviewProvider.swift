@@ -23,6 +23,53 @@ final class ScrubPreviewProvider {
     @ObservationIgnored private var prewarmTask: Task<Void, Never>?
     @ObservationIgnored private var generation = 0
 
+#if os(macOS)
+    static let timelineCount = 48
+    @ObservationIgnored private var timelineExtractor: FrameExtractor?
+    func configureTimeline(extractor: FrameExtractor?, duration: Double) {
+        timelineExtractor = extractor
+        buildTimeline(duration: duration)
+    }
+    private(set) var timelineFrames: [Int: CGImage] = [:]
+    @ObservationIgnored private var timelineTask: Task<Void, Never>?
+    @ObservationIgnored private var timelineDuration = 0.0
+    func buildTimeline(duration: Double) {
+        guard duration.isFinite, duration > 0, enabled, let extractor = timelineExtractor,
+              timelineDuration != duration else { return }
+        timelineDuration = duration
+        timelineTask?.cancel()
+        timelineFrames = [:]
+        timelineTask = Task { [weak self] in
+            var indices: [Int] = []
+            var divisions = 4
+            while true {
+                for part in 0..<divisions {
+                    let index = part * Self.timelineCount / divisions
+                    if !indices.contains(index) { indices.append(index) }
+                }
+                if divisions == Self.timelineCount { break }
+                divisions = min(divisions * 2, Self.timelineCount)
+            }
+            // Session-coupled extractors deliberately return nil during startup
+            // or buffering. Leave those slots pending and retry after yielding.
+            var pending = indices
+            for _ in 0..<60 {
+                guard !Task.isCancelled, !pending.isEmpty else { return }
+                var missing: [Int] = []
+                for index in pending {
+                    guard !Task.isCancelled else { return }
+                    let time = (Double(index) + 0.5) / Double(Self.timelineCount) * duration
+                    let image = await extractor.thumbnail(at: time, maxWidth: 320)
+                    guard !Task.isCancelled else { return }
+                    if let image { self?.timelineFrames[index] = image }
+                    else { missing.append(index) }
+                }
+                pending = missing
+                if !pending.isEmpty { try? await Task.sleep(for: .seconds(2)) }
+            }
+        }
+    }
+#endif
     init() {}
 
     /// Set up for a new playback session. `extractor` is the session extractor
@@ -71,6 +118,15 @@ final class ScrubPreviewProvider {
     /// Full teardown for end of session. Drops the extractor reference;
     /// `PlayerViewModel` owns the extractor's `shutdown()`.
     func reset() {
+#if os(macOS)
+        timelineTask?.cancel()
+        let oldTimelineExtractor = timelineExtractor
+        timelineExtractor = nil
+        if let oldTimelineExtractor { Task { await oldTimelineExtractor.shutdown() } }
+        timelineTask = nil
+        timelineDuration = 0
+        timelineFrames = [:]
+#endif
         loadTask?.cancel()
         loadTask = nil
         prewarmTask?.cancel()

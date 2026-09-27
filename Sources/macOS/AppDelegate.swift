@@ -4,6 +4,8 @@ import AppKit
 final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Set by AetherPlayerApp; receives files opened from Finder / "Open With".
     /// Installing it flushes any URLs that arrived before the UI was ready.
+    static var onOpenMainWindow: (() -> Void)?
+
     static var onOpenFiles: (([URL]) -> Void)? {
         didSet {
             guard onOpenFiles != nil, !pendingURLs.isEmpty else { return }
@@ -28,7 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// when there are no visible windows.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
         AppDelegate.bringToFront()
-        return true
+        return false // SwiftUI's scene opener owns recreation/fronting.
+
     }
 
     private static func deliver(_ urls: [URL]) {
@@ -41,7 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static func bringToFront() {
         DispatchQueue.main.async {
             NSApp.activate(ignoringOtherApps: true)
-            NSApp.windows.first { $0.canBecomeMain }?.makeKeyAndOrderFront(nil)
+            onOpenMainWindow?()
         }
     }
 }

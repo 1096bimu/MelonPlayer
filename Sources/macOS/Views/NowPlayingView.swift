@@ -12,7 +12,7 @@ struct NowPlayingView: View {
 
     /// Embedded cover decoded once per artwork-bytes change (see .task below).
     @State private var cover: NSImage?
-    @State private var showTracks = false
+    @State private var trackPanel: PlaybackPanel?
     @State private var scrubbing = false
 
     var body: some View {
@@ -29,13 +29,13 @@ struct NowPlayingView: View {
                 // the bottom and visible (no auto-hide for audio).
                 TransportBar(
                     model: model,
-                    onTracksTapped: { showTracks.toggle() },
+                    onPanelTapped: { trackPanel = $0 },
                     onPrevious: { Task { await model.playPrevious() } },
                     onNext: { Task { await model.playNext() } },
                     scrubbing: $scrubbing
                 )
-                .popover(isPresented: $showTracks, arrowEdge: .bottom) {
-                    TracksPopover(model: model)
+                .popover(item: $trackPanel, arrowEdge: .bottom) { panel in
+                    TracksPopover(model: model, panel: panel)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)

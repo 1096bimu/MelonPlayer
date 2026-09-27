@@ -11,13 +11,19 @@ enum AboutPanel {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
 
-        let credits = NSAttributedString(
-            string: "AetherEngine \(AetherEngine.version)",
+        let credits = NSMutableAttributedString(
+            string: "Based on AetherPlayer and AetherEngine\nDesign based on VisionOS App Melon Video\n\nAetherEngine \(AetherEngine.version)",
             attributes: [
                 .font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                 .foregroundColor: NSColor.secondaryLabelColor,
                 .paragraphStyle: paragraph,
             ])
+
+        let text = credits.string as NSString
+        credits.addAttribute(.link, value: URL(string: "https://aetherengine.superuser404.de")!,
+                             range: text.range(of: "AetherEngine"))
+        credits.addAttribute(.link, value: URL(string: "https://apps.apple.com/us/app/melon-video/id6811750997")!,
+                             range: text.range(of: "Melon Video"))
 
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
         NSApp.activate(ignoringOtherApps: true)

@@ -3,291 +3,302 @@ import AetherEngine
 
 struct TransportBar: View {
     let model: PlayerViewModel
-    let onTracksTapped: () -> Void
+    let onPanelTapped: (PlaybackPanel) -> Void
     let onPrevious: () -> Void
     let onNext: () -> Void
-
-    /// Bound to PlayerContainerView so the auto-hide timer can keep the
-    /// controls visible while a scrub is in progress (otherwise hiding the
-    /// bar mid-drag would drop the deferred seek).
     @Binding var scrubbing: Bool
-    @State private var scrubFraction: Double = 0
-
-    /// Live playback position as a 0...1 fraction.
-    private var playbackFraction: Double {
-        model.duration > 0 ? model.currentTime / model.duration : 0
-    }
-    /// Seconds shown by the leading timecode label: the scrub position while
-    /// dragging, otherwise the live playback time.
-    private var displayedTime: Double {
-        scrubbing ? scrubFraction * model.duration : model.currentTime
-    }
+    @State private var scrubFraction = 0.0
+    @State private var resumeAfterScrub = false
 
     var body: some View {
-        VStack(spacing: 8) {
-            // Scrubber
-            HStack(spacing: 10) {
-                Text(formatTimecode(displayedTime))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.white)
-                ScrubBar(
-                    progress: playbackFraction,
-                    duration: model.duration,
-                    scrubPreview: model.scrubPreview,
-                    scrubbing: $scrubbing,
-                    scrubFraction: $scrubFraction,
-                    onSeek: { model.seek(to: $0) }
-                )
-                Text(formatTimecode(model.duration))
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.white)
+        HStack(spacing: 10) {
+            Button { model.primaryAction() } label: {
+                Image(systemName: model.isEnded ? "arrow.counterclockwise" : model.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.title2).frame(width: 44, height: 44)
+                    .background(.white.opacity(0.12), in: Circle())
             }
-            // Controls row
-            HStack(spacing: 16) {
-                Button(action: { model.primaryAction() }) {
-                    Image(systemName: playButtonSymbol)
-                        .font(.title2)
+            .help("Play / Pause")
+            HStack(spacing: 4) {
+                Button { model.toggleMute() } label: {
+                    Image(systemName: model.isMuted ? "speaker.slash.fill" : "speaker.fill")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.white)
-                .shadow(color: .aetherPurple.opacity(0.6), radius: 6)
-
-                Button(action: { onPrevious() }) {
-                    Image(systemName: "backward.end.fill").font(.title3)
-                }
-                .buttonStyle(.plain).aetherHover().disabled(!model.hasPrevious)
-
-                Button(action: { onNext() }) {
-                    Image(systemName: "forward.end.fill").font(.title3)
-                }
-                .buttonStyle(.plain).aetherHover().disabled(!model.hasNext)
-
-                HStack(spacing: 6) {
-                    Button(action: { model.toggleMute() }) {
-                        Image(systemName: model.isMuted ? "speaker.slash.fill" : "speaker.fill")
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.white.opacity(0.7))
-                    Slider(value: Binding(get: { Double(model.volume) },
-                                          set: { model.volume = Float($0) }),
-                           in: 0...1)
-                        .frame(width: 90)
-                        .tint(.aetherPurple)
-                }
-
-                Spacer()
-
-                Text(backendBadge)
-                    .font(.system(.caption2, design: .monospaced))
-                    .aetherBadge()
-
-                Menu {
-                    ForEach(PlayerViewModel.availableRates, id: \.self) { r in
-                        Button {
-                            model.setRate(r)
-                        } label: {
-                            Text((model.rate == r ? "\u{2713} " : "") + rateLabel(r))
-                        }
-                    }
-                } label: {
-                    Text(rateLabel(model.rate))
-                        .font(.system(.caption, design: .monospaced))
-                        .aetherBadge()
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize()
-
-                if model.backend == .audio {
-                    Button(action: { model.toggleShuffle() }) {
-                        Image(systemName: "shuffle").font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(model.shuffleEnabled
-                                     ? AnyShapeStyle(Color.aetherPurple)
-                                     : AnyShapeStyle(.white.opacity(0.45)))
-                    .help(model.shuffleEnabled ? "Shuffle: on" : "Shuffle: off")
-
-                    Button(action: { model.cycleRepeatMode() }) {
-                        Image(systemName: repeatSymbol).font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(model.repeatMode == .off
-                                     ? AnyShapeStyle(.white.opacity(0.45))
-                                     : AnyShapeStyle(Color.aetherPurple))
-                    .help(repeatHelp)
-                }
-
+                Slider(value: Binding(get: { Double(model.volume) }, set: { model.volume = Float($0) }), in: 0...1)
+                    .frame(width: 64).tint(.white)
+            }
+            MacPreviewTimeline(model: model, scrubbing: $scrubbing, scrubFraction: $scrubFraction,
+                onBegin: {
+                    resumeAfterScrub = model.isPlaying
+                    if resumeAfterScrub { model.engine.pause() }
+                }, onEnd: {
+                    if resumeAfterScrub { model.engine.play() }
+                    resumeAfterScrub = false
+                })
+            VStack(spacing: 3) {
+                Text(formatTimecode(scrubbing ? scrubFraction * model.duration : model.currentTime))
+                Divider().overlay(.white.opacity(0.25))
+                Text(formatTimecode(model.duration)).foregroundStyle(.secondary)
+            }
+            .font(.system(.caption, design: .monospaced)).frame(width: 66)
+            BalancedControlButtons {
                 if model.backend != .audio {
-                    Button(action: { SnapshotSaver.captureAndSave(model: model) }) {
-                        Image(systemName: "camera").font(.title3)
-                    }
-                    .buttonStyle(.plain)
-                    .aetherHover()
-                    .disabled(!model.hasMedia)
+                    Button { SnapshotSaver.captureAndSave(model: model) } label: { Image(systemName: "camera") }
+                        .disabled(!model.hasMedia).help("Save screenshot")
                 }
-
-                Button(action: onTracksTapped) {
-                    Image(systemName: "captions.bubble").font(.title3)
+                if model.audioTracks.count > 1 {
+                    Button { onPanelTapped(.audio) } label: { Image(systemName: "waveform.mid") }.help("Audio")
                 }
-                .buttonStyle(.plain)
-                .aetherHover()
+                if !model.subtitleTracks.isEmpty {
+                    Button { onPanelTapped(.subtitles) } label: { Image(systemName: "captions.bubble") }.help("Subtitles")
+                }
+                if !model.playbackChapters.isEmpty || !model.discTitles.isEmpty {
+                    Button { onPanelTapped(.chapters) } label: { Image(systemName: "list.and.film") }.help("Chapters")
+                }
+                Button { PlaybackDisplayBrightness.shared.toggle() } label: {
+                    Image(systemName: PlaybackDisplayBrightness.shared.isBoosted ? "sun.max.fill" : "sun.max")
+                        .foregroundStyle(PlaybackDisplayBrightness.shared.isBoosted ? Color.yellow : Color.white)
+                }
+                .disabled(!PlaybackDisplayBrightness.shared.isSupported)
+                .help(PlaybackDisplayBrightness.shared.isBoosted ? "Restore display brightness" : "Maximum display brightness")
             }
         }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 16)
-        .background(
-            LinearGradient(colors: [.black.opacity(0), .black.opacity(0.75)],
-                           startPoint: .top, endPoint: .bottom)
-        )
-    }
-
-    /// "1x", "1.5x", "0.5x" -- drops trailing ".0" for whole rates.
-    private var playButtonSymbol: String {
-        if model.isEnded { return "arrow.counterclockwise" }
-        return model.isPlaying ? "pause.fill" : "play.fill"
-    }
-
-    private var backendBadge: String {
-        switch model.backend {
-        case .native: return "native"
-        case .software: return "sw"
-        case .aether: return "aether"
-        case .audio: return "audio"
-        case .none: return ""
-        }
-    }
-
-    private var repeatSymbol: String {
-        model.repeatMode == .one ? "repeat.1" : "repeat"
-    }
-
-    private var repeatHelp: String {
-        switch model.repeatMode {
-        case .off: return "Repeat: off"
-        case .all: return "Repeat: all tracks in folder"
-        case .one: return "Repeat: current track"
+        .buttonStyle(.plain).foregroundStyle(.white)
+        .padding(12)
+        .modifier(PlaybackControlGlass())
+        .padding(12)
+        .onAppear { model.scrubPreview.buildTimeline(duration: model.duration) }
+        .onChange(of: model.duration) { _, duration in model.scrubPreview.buildTimeline(duration: duration) }
+        .onDisappear {
+            if scrubbing { scrubbing = false; if resumeAfterScrub { model.engine.play() }; resumeAfterScrub = false }
         }
     }
 }
 
-/// Custom scrub track: click-to-seek, drag-to-scrub, and hover-to-preview in
-/// one view. A click or drag commits the seek on release (deferred), so the
-/// engine isn't hammered mid-drag; hovering only drives the floating preview
-/// and never moves playback. The preview bubble follows the cursor (or the
-/// drag) and stays clamped within the track.
-private struct ScrubBar: View {
-    let progress: Double          // 0...1 live playback position
-    let duration: Double
-    let scrubPreview: ScrubPreviewProvider
+/// Fixed midpoint samples fill progressively without moving neighboring slices.
+/// Hover and scrub use the same preview, outside the strip's clipping mask.
+private struct MacPreviewTimeline: View {
+    let model: PlayerViewModel
     @Binding var scrubbing: Bool
     @Binding var scrubFraction: Double
-    let onSeek: (Double) -> Void
-
-    @State private var hovering = false
-    @State private var hoverFraction: Double = 0
-
-    private let trackHeight: CGFloat = 4
-    private let previewWidth: CGFloat = 160
+    let onBegin: () -> Void
+    let onEnd: () -> Void
+    @State private var hoverFraction: Double?
+    private let height: CGFloat = 44
+    private var count: Int { ScrubPreviewProvider.timelineCount }
+    private func index(_ fraction: Double) -> Int { min(count - 1, max(0, Int(fraction * Double(count)))) }
 
     var body: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
-            let active = min(max(scrubbing ? scrubFraction : progress, 0), 1)
-            let knobX = CGFloat(active) * width
-            let emphasized = scrubbing || hovering
-            let knobSize: CGFloat = emphasized ? 16 : 12
-            let bubbleFraction = scrubbing ? scrubFraction : hoverFraction
-
+        GeometryReader { geometry in
+            let width = max(1, geometry.size.width)
+            let cell = width / CGFloat(count)
+            let inset = min(1, cell / 4)
+            let active = min(1, max(0, scrubbing ? scrubFraction : (model.duration > 0 ? model.currentTime / model.duration : 0)))
+            let target = scrubbing ? scrubFraction : hoverFraction
             ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(.white.opacity(0.25))
-                    .frame(height: trackHeight)
-                Capsule()
-                    .fill(LinearGradient.aetherAccent)
-                    .frame(width: knobX, height: trackHeight)
-                Circle()
-                    .fill(Color.aetherPurple)
-                    .frame(width: knobSize, height: knobSize)
-                    .offset(x: knobX - knobSize / 2)
+                RoundedRectangle(cornerRadius: 7).fill(.black.opacity(0.8))
+                HStack(spacing: 0) {
+                    ForEach(0..<count, id: \.self) { slot in
+                        ZStack {
+                            if let image = model.scrubPreview.timelineFrames[slot] {
+                                Image(decorative: image, scale: 1).resizable().scaledToFill()
+                                    .frame(width: max(0, cell - inset * 2), height: height - 4)
+                                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                            }
+                        }.frame(width: cell, height: height)
+                    }
+                }.clipShape(RoundedRectangle(cornerRadius: 7))
+                    .allowsHitTesting(false)
+                RoundedRectangle(cornerRadius: 7).strokeBorder(.white.opacity(0.35), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 1).fill(.white)
+                    .frame(width: 3, height: height + 4)
+                    .offset(x: min(width - 3, max(0, active * width - 1.5)))
+                    .allowsHitTesting(false)
             }
-            .frame(maxHeight: .infinity)
             .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        scrubbing = true
-                        scrubFraction = fraction(forX: Double(value.location.x), width: Double(width))
-                        scrubPreview.update(fraction: scrubFraction, durationSeconds: duration)
-                    }
-                    .onEnded { value in
-                        let f = fraction(forX: Double(value.location.x), width: Double(width))
-                        scrubFraction = f
-                        onSeek(f * duration)
-                        scrubbing = false
-                        if !hovering { scrubPreview.clear() }
-                    }
-            )
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    guard model.duration > 0 else { return }
+                    if !scrubbing { onBegin(); scrubbing = true }
+                    scrubFraction = fraction(forX: value.location.x, width: width)
+                    model.scrubPreview.update(fraction: scrubFraction, durationSeconds: model.duration)
+                }
+                .onEnded { value in
+                    guard scrubbing else { return }
+                    let fraction = fraction(forX: value.location.x, width: width)
+                    scrubFraction = fraction
+                    model.seek(to: fraction * model.duration)
+                    scrubbing = false
+                    onEnd()
+                    if hoverFraction == nil { model.scrubPreview.clear() }
+                })
             .onContinuousHover { phase in
                 switch phase {
                 case .active(let point):
-                    if !hovering { scrubPreview.prewarm() }
-                    hovering = true
-                    hoverFraction = fraction(forX: Double(point.x), width: Double(width))
-                    if !scrubbing {
-                        scrubPreview.update(fraction: hoverFraction, durationSeconds: duration)
+                    hoverFraction = fraction(forX: point.x, width: width)
+                    if !scrubbing, let hoverFraction {
+                        model.scrubPreview.update(fraction: hoverFraction, durationSeconds: model.duration)
                     }
                 case .ended:
-                    hovering = false
-                    if !scrubbing { scrubPreview.clear() }
+                    hoverFraction = nil
+                    if !scrubbing { model.scrubPreview.clear() }
                 }
             }
             .overlay(alignment: .bottomLeading) {
-                if emphasized, let image = scrubPreview.previewImage {
-                    ScrubThumbnail(image: image, time: bubbleFraction * duration)
-                        .offset(
-                            x: scrubThumbX(fraction: bubbleFraction,
-                                           width: Double(width),
-                                           thumbWidth: Double(previewWidth)),
-                            y: -90
-                        )
+                if let target, let image = model.scrubPreview.previewImage ?? model.scrubPreview.timelineFrames[index(target)] {
+                    ScrubThumbnail(image: image, time: target * model.duration)
+                        .offset(x: scrubThumbX(fraction: target, width: width, thumbWidth: 160), y: -height - 10)
+                        .allowsHitTesting(false)
                 }
             }
+            .accessibilityLabel("Playback position")
+            .accessibilityValue(formatTimecode(model.currentTime))
+            .accessibilityAdjustableAction { model.seek(by: $0 == .increment ? 10 : -10) }
         }
-        .frame(height: 22)
+        .frame(minWidth: 100, maxWidth: .infinity).frame(height: height)
+        .transaction { $0.animation = nil; $0.disablesAnimations = true }
     }
 }
 
-/// The floating keyframe preview shown above the playhead while scrubbing.
+/// Retains the original floating seek preview above the timeline.
 private struct ScrubThumbnail: View {
     let image: CGImage
     let time: Double
-
-    private static let width: CGFloat = 160
-
-    /// Height from the frame's own aspect ratio. Fixing both dimensions keeps
-    /// the thin track overlay (22 pt tall) from squashing the proposed height.
-    private var height: CGFloat {
-        image.width > 0 ? Self.width * CGFloat(image.height) / CGFloat(image.width)
-                        : Self.width * 9 / 16
-    }
-
+    private let width: CGFloat = 160
+    private var height: CGFloat { width * CGFloat(image.height) / CGFloat(max(1, image.width)) }
     var body: some View {
         VStack(spacing: 2) {
-            Image(decorative: image, scale: 1, orientation: .up)
-                .resizable()
-                .frame(width: Self.width, height: height)
+            Image(decorative: image, scale: 1).resizable()
+                .frame(width: width, height: height)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(.white.opacity(0.3), lineWidth: 1)
-                )
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(.white.opacity(0.6), lineWidth: 1))
             Text(formatTimecode(time))
                 .font(.system(.caption2, design: .monospaced))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 4).padding(.vertical, 1)
                 .background(.black.opacity(0.6), in: Capsule())
         }
+        .fixedSize()
         .shadow(radius: 6)
+    }
+}
+
+/// Row-major order, with the extra item on the first row for odd counts.
+struct BalancedControlButtons: Layout {
+    private let cell: CGFloat = 24
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let columns = subviews.count >= 3 ? (subviews.count + 1) / 2 : subviews.count
+        return CGSize(width: CGFloat(columns) * cell, height: subviews.count >= 3 ? 48 : 24)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let columns = subviews.count >= 3 ? (subviews.count + 1) / 2 : max(1, subviews.count)
+        for (index, view) in subviews.enumerated() {
+            view.place(at: CGPoint(x: bounds.minX + CGFloat(index % columns) * cell + cell / 2,
+                                   y: bounds.minY + CGFloat(index / columns) * cell + cell / 2),
+                       anchor: .center, proposal: ProposedViewSize(width: cell, height: cell))
+        }
+    }
+}
+
+import AppKit
+import Darwin
+
+/// App-owned adapter; leaves AetherEngine untouched. Unsupported displays are inert.
+@MainActor @Observable final class PlaybackDisplayBrightness {
+    static let shared = PlaybackDisplayBrightness()
+    private(set) var isBoosted = false
+    private(set) var isSupported = false
+    private var displayID: CGDirectDisplayID?
+    private var saved: [CGDirectDisplayID: Float] = [:]
+    private let api = PlaybackBrightnessAPI()
+
+    func select(screen: NSScreen?, active: Bool) {
+        let id = active ? (screen?.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value : nil
+        if id != displayID {
+            restore()
+            displayID = id
+            isBoosted = false
+        }
+        isSupported = id.flatMap { api.read($0) } != nil
+    }
+    func toggle() {
+        guard let id = displayID else { return }
+        if isBoosted { restore(); return }
+        guard saved.isEmpty, let previous = api.read(id), previous < 1 else { return }
+        if api.write(1, to: id) {
+            saved[id] = previous
+            isBoosted = true
+        }
+    }
+    func restore() {
+        for (id, value) in saved {
+            if api.write(value, to: id) { saved.removeValue(forKey: id) }
+        }
+        isBoosted = displayID.map { saved[$0] != nil } ?? false
+    }
+}
+
+private final class PlaybackBrightnessAPI {
+    private typealias CanChange = @convention(c) (UInt32) -> Bool
+    private typealias Get = @convention(c) (UInt32, UnsafeMutablePointer<Float>) -> Int32
+    private typealias Set = @convention(c) (UInt32, Float) -> Int32
+    private let canChange: CanChange?
+    private let get: Get?
+    private let set: Set?
+    // Keep the handle loaded for the lifetime of the function pointers.
+    private let handle: UnsafeMutableRawPointer?
+    init() {
+        let handle = dlopen("/System/Library/PrivateFrameworks/DisplayServices.framework/DisplayServices", RTLD_LAZY | RTLD_LOCAL)
+        self.handle = handle
+        func symbol<T>(_ name: String, _ type: T.Type) -> T? {
+            guard let handle, let pointer = dlsym(handle, name) else { return nil }
+            return unsafeBitCast(pointer, to: type)
+        }
+        canChange = symbol("DisplayServicesCanChangeBrightness", CanChange.self)
+        get = symbol("DisplayServicesGetBrightness", Get.self)
+        set = symbol("DisplayServicesSetBrightness", Set.self)
+    }
+    func read(_ id: CGDirectDisplayID) -> Float? {
+        guard canChange?(id) == true, let get, set != nil else { return nil }
+        var value: Float = -1
+        guard get(id, &value) == 0, value.isFinite, (0...1).contains(value) else { return nil }
+        return value
+    }
+    func write(_ value: Float, to id: CGDirectDisplayID) -> Bool {
+        guard read(id) != nil else { return false }
+        return set?(id, value) == 0
+    }
+}
+
+/// Mounted outside the auto-hiding controls so their disappearance never resets the boost.
+struct PlaybackBrightnessWindowBinding: NSViewRepresentable {
+    let active: Bool
+    func makeNSView(context: Context) -> Observer { Observer() }
+    func updateNSView(_ view: Observer, context: Context) { view.active = active; view.refresh() }
+    static func dismantleNSView(_ view: Observer, coordinator: ()) { view.detach() }
+    final class Observer: NSView {
+        var active = false
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            NotificationCenter.default.removeObserver(self)
+            guard let window else { detach(); return }
+            let center = NotificationCenter.default
+            center.addObserver(self, selector: #selector(refresh), name: NSWindow.didChangeScreenNotification, object: window)
+            center.addObserver(self, selector: #selector(stop), name: NSWindow.willCloseNotification, object: window)
+            center.addObserver(self, selector: #selector(stop), name: NSApplication.willTerminateNotification, object: nil)
+            center.addObserver(self, selector: #selector(refresh), name: NSApplication.didChangeScreenParametersNotification, object: nil)
+            refresh()
+        }
+        @objc func refresh() { PlaybackDisplayBrightness.shared.select(screen: window?.screen, active: active) }
+        @objc func stop() { PlaybackDisplayBrightness.shared.select(screen: nil, active: false) }
+        func detach() { NotificationCenter.default.removeObserver(self); stop() }
+    }
+}
+
+private struct PlaybackControlGlass: ViewModifier {
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16))
+        } else {
+            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
     }
 }
